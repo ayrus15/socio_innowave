@@ -3,6 +3,7 @@ import "./globals.css";
 import { AuthProvider } from "@/context/AuthContext";
 import { TermsConsentProvider } from "@/context/TermsConsentContext";
 import NavigationBar from "./_components/NavigationBar";
+import { createClient } from "@supabase/supabase-js";
 
 import {
   EventsProvider,
@@ -10,6 +11,9 @@ import {
   CarouselDisplayImage,
   FetchedEvent,
 } from "../context/EventContext";
+
+// Force dynamic rendering for this layout
+export const dynamic = 'force-dynamic';
 
 export const metadata: Metadata = {
   title: "SOCIO",
@@ -81,23 +85,27 @@ async function getInitialEventsData() {
   let error: string | null = null;
 
   try {
-    const response = await fetch("http://localhost:8000/api/events", {
-      cache: "no-store",
-    });
+    // Use Supabase directly instead of localhost API
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    
+    if (!supabaseUrl || !supabaseAnonKey) {
+      throw new Error("Supabase configuration missing");
+    }
+    
+    const supabase = createClient(supabaseUrl, supabaseAnonKey);
+    
+    const { data, error: supabaseError } = await supabase
+      .from("events")
+      .select("*")
+      .order("created_at", { ascending: false });
 
-    if (!response.ok) {
-      let errorMsg = `Network response was not ok: ${response.status} ${response.statusText}`;
-      try {
-        const errorData = await response.json();
-        errorMsg = errorData.message || errorData.detail || errorMsg;
-      } catch (jsonError) {}
-      throw new Error(errorMsg);
+    if (supabaseError) {
+      throw new Error(supabaseError.message);
     }
 
-    const data = await response.json();
-
-    if (data.events && Array.isArray(data.events)) {
-      allEvents = data.events as FetchedEvent[];
+    if (data && Array.isArray(data)) {
+      allEvents = data as FetchedEvent[];
 
       if (allEvents.length > 0) {
         const randomEventsForCarousel = getRandomEvents(allEvents, 3);
@@ -119,7 +127,7 @@ async function getInitialEventsData() {
 
         upcomingEvents = latestEventsForSections.map(transformToEventCardData);
       } else {
-        console.log("No events found from API.");
+        console.log("No events found from Supabase.");
       }
     } else {
       throw new Error("Fetched event data is not in the expected format.");
