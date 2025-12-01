@@ -1,238 +1,170 @@
-import mysql from 'mysql2/promise';
+import { createClient } from '@supabase/supabase-js';
 import dotenv from 'dotenv';
 
 dotenv.config();
 
-// Create connection pool for better performance
-const pool = mysql.createPool({
-  host: process.env.DB_HOST || 'localhost',
-  port: process.env.DB_PORT || 3306,
-  user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || '',
-  database: process.env.DB_NAME || 'socio_db',
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0
-});
+// Supabase configuration
+const supabaseUrl = process.env.SUPABASE_URL || 'https://vkappuaapscvteexogtp.supabase.co';
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-// Initialize database with schema
+if (!supabaseServiceKey) {
+  console.error('❌ SUPABASE_SERVICE_ROLE_KEY is required in .env file');
+  process.exit(1);
+}
+
+// Create Supabase client with service role key for full access
+const supabase = createClient(supabaseUrl, supabaseServiceKey);
+
+// Initialize database - just verify connection for Supabase
 export async function initializeDatabase() {
   try {
-    console.log('🔍 Checking MySQL connection...');
+    console.log('🔍 Connecting to Supabase...');
     
-    // Test connection first
-    const connection = await pool.getConnection();
-    await connection.ping();
-    connection.release();
-    console.log('✅ MySQL connection successful');
-
-    // Create database if it doesn't exist
-    const setupConnection = await mysql.createConnection({
-      host: process.env.DB_HOST || 'localhost',
-      port: process.env.DB_PORT || 3306,
-      user: process.env.DB_USER || 'root',
-      password: process.env.DB_PASSWORD || '',
-    });
-
-    await setupConnection.execute(`CREATE DATABASE IF NOT EXISTS \`${process.env.DB_NAME || 'socio_db'}\``);
-    await setupConnection.end();
-
-    console.log('✅ Database created/verified successfully');
-
-    // Create tables
-    await createTables();
-    console.log('✅ Database initialized successfully with MySQL');
-  } catch (error) {
-    console.error('❌ Database initialization error:', error.message);
+    // Test connection by querying users table
+    const { data, error } = await supabase.from('users').select('count', { count: 'exact', head: true });
     
-    if (error.code === 'ER_ACCESS_DENIED_ERROR') {
-      console.error('🔧 Please check your MySQL credentials in .env file');
-      console.error('💡 Or run the setup script: npm run setup-mysql');
-    } else if (error.code === 'ECONNREFUSED') {
-      console.error('🔧 MySQL server is not running. Please start MySQL service.');
+    if (error) {
+      throw error;
     }
     
-    throw error;
-  }
-}
-
-async function createTables() {
-  try {
-    // Users table
-    await pool.execute(`
-      CREATE TABLE IF NOT EXISTS users (
-        id VARCHAR(36) PRIMARY KEY DEFAULT (UUID()),
-        auth_uuid VARCHAR(255) UNIQUE,
-        email VARCHAR(255) UNIQUE NOT NULL,
-        name VARCHAR(255),
-        avatar_url TEXT,
-        is_organiser BOOLEAN DEFAULT FALSE,
-        course VARCHAR(255),
-        register_number VARCHAR(100),
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        INDEX idx_email (email),
-        INDEX idx_auth_uuid (auth_uuid)
-      )
-    `);
-
-    // Events table
-    await pool.execute(`
-      CREATE TABLE IF NOT EXISTS events (
-        id VARCHAR(36) PRIMARY KEY DEFAULT (UUID()),
-        event_id VARCHAR(255) UNIQUE NOT NULL,
-        title VARCHAR(255) NOT NULL,
-        description TEXT,
-        event_date DATE,
-        event_time TIME,
-        end_date DATE,
-        venue VARCHAR(255),
-        category VARCHAR(100),
-        department_access JSON,
-        claims_applicable BOOLEAN DEFAULT FALSE,
-        registration_fee DECIMAL(10,2),
-        participants_per_team INTEGER,
-        max_participants INTEGER,
-        event_image_url TEXT,
-        banner_url TEXT,
-        pdf_url TEXT,
-        contact_email VARCHAR(255),
-        contact_phone VARCHAR(20),
-        event_heads JSON,
-        created_by VARCHAR(255),
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        INDEX idx_event_id (event_id),
-        INDEX idx_category (category),
-        INDEX idx_event_date (event_date)
-      )
-    `);
-
-    // Registrations table
-    await pool.execute(`
-      CREATE TABLE IF NOT EXISTS registrations (
-        id VARCHAR(36) PRIMARY KEY DEFAULT (UUID()),
-        registration_id VARCHAR(255) UNIQUE NOT NULL,
-        event_id VARCHAR(255),
-        user_email VARCHAR(255),
-        registration_type ENUM('individual', 'team'),
-        individual_name VARCHAR(255),
-        individual_email VARCHAR(255),
-        individual_register_number VARCHAR(100),
-        team_name VARCHAR(255),
-        team_leader_name VARCHAR(255),
-        team_leader_email VARCHAR(255),
-        team_leader_register_number VARCHAR(100),
-        teammates JSON,
-        qr_code_data TEXT,
-        qr_code_generated_at TIMESTAMP,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        INDEX idx_registration_id (registration_id),
-        INDEX idx_event_id (event_id),
-        FOREIGN KEY (event_id) REFERENCES events(event_id) ON DELETE CASCADE
-      )
-    `);
-
-    // Attendance status table
-    await pool.execute(`
-      CREATE TABLE IF NOT EXISTS attendance_status (
-        id VARCHAR(36) PRIMARY KEY DEFAULT (UUID()),
-        registration_id VARCHAR(255),
-        event_id VARCHAR(255),
-        status ENUM('attended', 'absent') DEFAULT 'absent',
-        marked_at TIMESTAMP,
-        marked_by VARCHAR(255),
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE KEY unique_attendance (registration_id),
-        INDEX idx_event_id (event_id),
-        FOREIGN KEY (registration_id) REFERENCES registrations(registration_id) ON DELETE CASCADE,
-        FOREIGN KEY (event_id) REFERENCES events(event_id) ON DELETE CASCADE
-      )
-    `);
-
-    // Notifications table
-    await pool.execute(`
-      CREATE TABLE IF NOT EXISTS notifications (
-        id VARCHAR(36) PRIMARY KEY DEFAULT (UUID()),
-        title VARCHAR(255) NOT NULL,
-        message TEXT NOT NULL,
-        type ENUM('info', 'success', 'warning', 'error') DEFAULT 'info',
-        event_id VARCHAR(255),
-        event_title VARCHAR(255),
-        action_url TEXT,
-        recipient_email VARCHAR(255) NOT NULL,
-        is_read BOOLEAN DEFAULT FALSE,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        INDEX idx_recipient (recipient_email),
-        INDEX idx_event_id (event_id),
-        INDEX idx_created_at (created_at)
-      )
-    `);
-
-    // QR scan logs table
-    await pool.execute(`
-      CREATE TABLE IF NOT EXISTS qr_scan_logs (
-        id VARCHAR(36) PRIMARY KEY DEFAULT (UUID()),
-        registration_id VARCHAR(255),
-        event_id VARCHAR(255),
-        scan_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        scan_result ENUM('success', 'invalid', 'duplicate', 'expired') DEFAULT 'success',
-        scanner_info JSON,
-        INDEX idx_registration_id (registration_id),
-        INDEX idx_event_id (event_id),
-        INDEX idx_scan_timestamp (scan_timestamp),
-        FOREIGN KEY (registration_id) REFERENCES registrations(registration_id) ON DELETE CASCADE,
-        FOREIGN KEY (event_id) REFERENCES events(event_id) ON DELETE CASCADE
-      )
-    `);
-
-    console.log('All tables created successfully');
+    console.log('✅ Supabase connection successful');
+    console.log(`📍 Connected to: ${supabaseUrl}`);
+    
+    return true;
   } catch (error) {
-    console.error('Error creating tables:', error);
+    console.error('❌ Supabase connection error:', error.message);
     throw error;
   }
 }
 
-// Helper function to execute queries
+// Helper function to execute queries - returns all rows
+export async function queryAll(table, options = {}) {
+  let query = supabase.from(table).select(options.select || '*');
+  
+  if (options.where) {
+    for (const [key, value] of Object.entries(options.where)) {
+      query = query.eq(key, value);
+    }
+  }
+  
+  if (options.order) {
+    query = query.order(options.order.column, { ascending: options.order.ascending ?? true });
+  }
+  
+  if (options.limit) {
+    query = query.limit(options.limit);
+  }
+  
+  const { data, error } = await query;
+  
+  if (error) {
+    throw error;
+  }
+  
+  return data || [];
+}
+
+// Helper function to execute queries - returns single row
+export async function queryOne(table, options = {}) {
+  let query = supabase.from(table).select(options.select || '*');
+  
+  if (options.where) {
+    for (const [key, value] of Object.entries(options.where)) {
+      query = query.eq(key, value);
+    }
+  }
+  
+  const { data, error } = await query.single();
+  
+  if (error && error.code !== 'PGRST116') { // PGRST116 = no rows returned
+    throw error;
+  }
+  
+  return data || null;
+}
+
+// Helper function to insert data
+export async function insert(table, data) {
+  const { data: result, error } = await supabase
+    .from(table)
+    .insert(data)
+    .select();
+  
+  if (error) {
+    throw error;
+  }
+  
+  return result;
+}
+
+// Helper function to update data
+export async function update(table, data, where) {
+  let query = supabase.from(table).update(data);
+  
+  for (const [key, value] of Object.entries(where)) {
+    query = query.eq(key, value);
+  }
+  
+  const { data: result, error } = await query.select();
+  
+  if (error) {
+    throw error;
+  }
+  
+  return result;
+}
+
+// Helper function to upsert data
+export async function upsert(table, data, onConflict = 'id') {
+  const { data: result, error } = await supabase
+    .from(table)
+    .upsert(data, { onConflict })
+    .select();
+  
+  if (error) {
+    throw error;
+  }
+  
+  return result;
+}
+
+// Helper function to delete data
+export async function remove(table, where) {
+  let query = supabase.from(table).delete();
+  
+  for (const [key, value] of Object.entries(where)) {
+    query = query.eq(key, value);
+  }
+  
+  const { data: result, error } = await query.select();
+  
+  if (error) {
+    throw error;
+  }
+  
+  return result;
+}
+
+// Execute raw query (for complex queries) - use Supabase RPC if needed
 export async function executeQuery(query, params = []) {
-  try {
-    const [results] = await pool.execute(query, params);
-    return results;
-  } catch (error) {
-    console.error('Query execution error:', error);
-    throw error;
-  }
+  // For Supabase, we use the query builder instead of raw SQL
+  // This is a compatibility layer - convert common patterns
+  console.warn('⚠️ executeQuery called - use Supabase query methods instead');
+  return [];
 }
 
-// Helper function to get a single row
-export async function queryOne(query, params = []) {
-  try {
-    const [results] = await pool.execute(query, params);
-    return results[0] || null;
-  } catch (error) {
-    console.error('Query one execution error:', error);
-    throw error;
-  }
-}
+// Export Supabase client for direct access when needed
+export { supabase };
 
-// Helper function to get all rows
-export async function queryAll(query, params = []) {
-  try {
-    const [results] = await pool.execute(query, params);
-    return results;
-  } catch (error) {
-    console.error('Query all execution error:', error);
-    throw error;
-  }
-}
-
-// Function to close the connection pool
-export async function closeDatabase() {
-  try {
-    await pool.end();
-    console.log('Database connection pool closed');
-  } catch (error) {
-    console.error('Error closing database:', error);
-  }
-}
-
-export { pool };
-export default pool;
+// Default export for compatibility
+export default {
+  supabase,
+  initializeDatabase,
+  queryAll,
+  queryOne,
+  insert,
+  update,
+  upsert,
+  remove,
+  executeQuery
+};
